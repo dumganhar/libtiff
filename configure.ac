@@ -24,18 +24,21 @@ dnl OF THIS SOFTWARE.
 
 dnl Process this file with autoconf to produce a configure script.
 
-AC_PREREQ(2.64)
+AC_PREREQ(2.68)
 AC_INIT([LibTIFF Software],[4.0.2],[tiff@lists.maptools.org],[tiff])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR(m4)
-AC_LANG(C)
+#cjh AC_LANG(C)
+
+AC_CANONICAL_SYSTEM
 
 dnl Compute the canonical host (run-time) system type variable
 AC_CANONICAL_HOST
 
 AM_INIT_AUTOMAKE
 dnl Do not rebuild generated files every time
-AM_MAINTAINER_MODE
+#cjh AM_MAINTAINER_MODE
+
 
 dnl Versioning.
 dnl Don't fill the ALPHA_VERSION field, if not applicable.
@@ -102,9 +105,496 @@ AC_SUBST(LIBTIFF_VERSION)
 AC_SUBST(LIBTIFF_VERSION_INFO)
 AC_SUBST(LIBTIFF_RELEASE_DATE)
 
+
+dnl =============================
+dnl patch for android
+
+COMPILE_ENVIRONMENT=1
+
+dnl AR_FLAGS set here so HOST_AR_FLAGS can be set correctly (see bug 538269)
+#AR_FLAGS='cr $@'
+echo "******************************************************************"
+
+dnl ========================================================
+dnl = Android uses a very custom (hacky) toolchain; we need to do this
+dnl = here, so that the compiler checks can succeed
+dnl ========================================================
+
+AC_ARG_WITH(android-ndk, AS_HELP_STRING([--with-android-ndk], [location where the Android NDK can be found]), android_ndk=$withval, android_ndk=)
+
+AC_ARG_WITH(android-toolchain, AS_HELP_STRING([--with-android-toolchain], [location of the android toolchain, default NDK/build/prebuilt/HOST/arm-eabi-4.4.0]), android_toolchain=$withval, android_toolchain=)
+
+AC_ARG_WITH(android-version, AS_HELP_STRING([--with-android-version], [android platform version, default 5]), android_version=$withval, android_version=5)
+
+AC_ARG_WITH(android-sdk, AS_HELP_STRING([--with-android-sdk], [location where the Android SDK can be found (base directory, e.g. .../android/platforms/android-6)]), android_sdk=$withval, android_sdk=)
+
+AC_ARG_WITH(android-platform, AS_HELP_STRING([--with-android-platform], [location of platform dir, default NDK/build/platforms/android-5/arch-arm]), android_platform=$withval, android_platform=)
+
+AC_ARG_ENABLE(android-libstdcxx,
+[AC_HELP_STRING([--enable-android-libstdcxx],[use GNU libstdc++ instead of STLPort for NDK >= 5])],
+[ case "${enableval}" in
+  yes) MOZ_ANDROID_LIBSTDCXX=1 ;;
+  no)  MOZ_ANDROID_LIBSTDCXX= ;;
+  *)   AC_MSG_ERROR(bad value ${enableval} for --enable-android-libstdcxx) ;;
+esac],
+[MOZ_ANDROID_LIBSTDCXX=])
+
+
+case "$target" in
+arm-linux*-android*|*-linuxandroid*)
+    android_tool_prefix="arm-linux-androideabi"
+    ;;
+arm-android-eabi)
+    android_tool_prefix="arm-eabi"
+    ;;
+i?86-*android*)
+    android_tool_prefix="i686-android-linux"
+    ;;
+*)
+    android_tool_prefix="$target_os"
+    ;;
+esac
+
+################
+
+case "$target" in
+*-android*|*-linuxandroid*)
+    if test -z "$android_ndk" ; then
+        AC_MSG_ERROR([You must specify --with-android-ndk=/path/to/ndk when targeting Android.])
+    fi
+
+    if test -z "$android_sdk" ; then
+        AC_MSG_ERROR([You must specify --with-android-sdk=/path/to/sdk when targeting Android.])
+    fi
+
+    android_platform_tools="$android_sdk"/../../platform-tools
+    if test ! -d "$android_platform_tools" ; then
+        android_platform_tools="$android_sdk"/tools # SDK Tools < r8
+    else
+        if ! test -e "$android_sdk"/source.properties ; then
+            AC_MSG_ERROR([The path in --with-android-sdk isn't valid (source.properties hasn't been found).])
+        fi
+
+        # Minimum Android SDK API Level we require.
+        android_min_api_level=13
+
+        # Get the api level from "$android_sdk"/source.properties.
+        android_api_level=`$AWK -F = '$1 == "AndroidVersion.ApiLevel" {print $2}' "$android_sdk"/source.properties`
+
+        if test -z "$android_api_level" ; then
+            AC_MSG_ERROR([Unexpected error: no AndroidVersion.ApiLevel field has been found in source.properties.])
+        fi
+
+        if ! test "$android_api_level" -eq "$android_api_level" ; then
+            AC_MSG_ERROR([Unexpected error: the found android api value isn't a number! (found $android_api_level)])
+        fi
+
+        if test $android_api_level -lt $android_min_api_level ; then
+            AC_MSG_ERROR([The given Android SDK provides API level $android_api_level ($android_min_api_level or higher required).])
+        fi
+    fi
+
+    if test -z "$android_toolchain" ; then
+        AC_MSG_CHECKING([for android toolchain directory])
+
+        kernel_name=`uname -s | tr "[[:upper:]]" "[[:lower:]]"`
+
+        android_toolchain="$android_ndk"/build/prebuilt/$kernel_name-x86/arm-eabi-4.4.0
+
+        # With newer NDK, the toolchain path has changed.
+        if ! test -d "$android_toolchain" ; then
+            android_toolchain="$android_ndk"/toolchains/arm-$kernel_name-androideabi-4.4.3/prebuilt/$kernel_name-x86
+        fi
+
+        if test -d "$android_toolchain" ; then
+            AC_MSG_RESULT([$android_toolchain])
+        else
+            AC_MSG_ERROR([not found. You have to specify --with-android-toolchain=/path/to/ndk/toolchain.])
+        fi
+    fi
+
+    if test -z "$android_platform" ; then
+        AC_MSG_CHECKING([for android platform directory])
+
+        android_platform="$android_ndk"/build/platforms/android-"$android_version"/arch-"$target_cpu"
+
+        # With newer NDK, the platform path has changed.
+        if ! test -d "$android_platform" ; then
+            android_platform="$android_ndk"/platforms/android-"$android_version"/arch-"$target_cpu"
+        fi
+
+        if test -d "$android_platform" ; then
+            AC_MSG_RESULT([$android_platform])
+        else
+            AC_MSG_ERROR([not found. You have to specify --with-android-platform=/path/to/ndk/platform., $android_platform,...])
+        fi
+    fi
+
+    dnl set up compilers
+    AS="$android_toolchain"/bin/"$android_tool_prefix"-as
+    CC="$android_toolchain"/bin/"$android_tool_prefix"-gcc
+    CXX="$android_toolchain"/bin/"$android_tool_prefix"-g++
+    CPP="$android_toolchain"/bin/"$android_tool_prefix"-cpp
+    LD="$android_toolchain"/bin/"$android_tool_prefix"-ld
+    AR="$android_toolchain"/bin/"$android_tool_prefix"-ar
+    RANLIB="$android_toolchain"/bin/"$android_tool_prefix"-ranlib
+    STRIP="$android_toolchain"/bin/"$android_tool_prefix"-strip
+
+    CPPFLAGS="-isystem $android_platform/usr/include $CPPFLAGS"
+    CFLAGS="-mandroid -fno-short-enums -fno-exceptions $CFLAGS"
+    CXXFLAGS="-mandroid -fno-short-enums -fno-exceptions $CXXFLAGS"
+
+    dnl Add -llog by default, since we use it all over the place.
+    dnl Add --allow-shlib-undefined, because libGLESv2 links to an
+    dnl undefined symbol (present on the hardware, just not in the
+    dnl NDK.)
+    LDFLAGS="-mandroid -L$android_platform/usr/lib -Wl,-rpath-link=$android_platform/usr/lib --sysroot=$android_platform -llog -Wl,--allow-shlib-undefined $LDFLAGS"
+
+
+    dnl prevent cross compile section from using these flags as host flags
+    if test -z "$HOST_CPPFLAGS" ; then
+        HOST_CPPFLAGS=" "
+    fi
+    if test -z "$HOST_CFLAGS" ; then
+        HOST_CFLAGS=" "
+    fi
+    if test -z "$HOST_CXXFLAGS" ; then
+        HOST_CXXFLAGS=" "
+    fi
+    if test -z "$HOST_LDFLAGS" ; then
+        HOST_LDFLAGS=" "
+    fi
+
+    ANDROID_NDK="${android_ndk}"
+    ANDROID_TOOLCHAIN="${android_toolchain}"
+    ANDROID_PLATFORM="${android_platform}"
+    ANDROID_SDK="${android_sdk}"
+    ANDROID_PLATFORM_TOOLS="${android_platform_tools}"
+    ANDROID_VERSION="${android_version}"
+
+    AC_DEFINE(ANDROID)
+    AC_DEFINE_UNQUOTED(ANDROID_VERSION, $android_version)
+    AC_SUBST(ANDROID_VERSION)
+    CROSS_COMPILE=1
+ #   MOZ_CHROME_FILE_FORMAT=omni
+    ;;
+esac
+
+dnl ========================================================
+dnl Checks for compilers.
+dnl ========================================================
+dnl Set CROSS_COMPILE in the environment when running configure
+dnl to use the cross-compile setup for now
+dnl ========================================================
+echo "test complie env--- $target $host ------1111, $COMPILE_ENVIRONMENT"
+
+if test "$COMPILE_ENVIRONMENT"; then
+
+
+   #echo "-----+++++\n"
+
+   echo "test complie env--- $target $host ------22222"
+# Note:
+#   In Mozilla, we use the names $target, $host and $build incorrectly, but are
+#   too far gone to back out now. See Bug 475488:
+#     - When we say $target, we mean $host, that is, the system on which
+#       Mozilla will be run.
+#     - When we say $host, we mean $build, that is, the system on which Mozilla
+#       is built.
+#     - $target (in its correct usage) is for compilers who generate code for a
+#       different platform than $host, so it would not be used by Mozilla.
+
+
+#if test "$target" != "$host"; then
+    echo "cross compiling from $host to $target"
+
+    _SAVE_CC="$CC"
+    _SAVE_CFLAGS="$CFLAGS"
+    _SAVE_LDFLAGS="$LDFLAGS"
+
+    AC_MSG_CHECKING([for host c compiler])
+    AC_CHECK_PROGS(HOST_CC, $HOST_CC gcc cc /usr/ucb/cc cl icc, "")
+    if test -z "$HOST_CC"; then
+        AC_MSG_ERROR([no acceptable c compiler found in \$PATH])
+    fi
+    AC_MSG_RESULT([$HOST_CC])
+    AC_MSG_CHECKING([for host c++ compiler])
+    AC_CHECK_PROGS(HOST_CXX, $HOST_CXX $CCC c++ g++ gcc CC cxx cc++ cl icc, "")
+    if test -z "$HOST_CXX"; then
+        AC_MSG_ERROR([no acceptable c++ compiler found in \$PATH])
+    fi
+    AC_MSG_RESULT([$HOST_CXX])
+
+    if test -z "$HOST_CFLAGS"; then
+        HOST_CFLAGS="$CFLAGS"
+    fi
+    if test -z "$HOST_CXXFLAGS"; then
+        HOST_CXXFLAGS="$CXXFLAGS"
+    fi
+    if test -z "$HOST_LDFLAGS"; then
+        HOST_LDFLAGS="$LDFLAGS"
+    fi
+    if test -z "$HOST_AR_FLAGS"; then
+        HOST_AR_FLAGS="$AR_FLAGS"
+    fi
+    AC_CHECK_PROGS(HOST_RANLIB, $HOST_RANLIB ranlib, ranlib, :)
+    AC_CHECK_PROGS(HOST_AR, $HOST_AR ar, ar, :)
+    CC="$HOST_CC"
+    CFLAGS="$HOST_CFLAGS"
+    LDFLAGS="$HOST_LDFLAGS"
+
+    echo "1111111--------------"
+
+    AC_MSG_CHECKING([whether the host c compiler ($HOST_CC $HOST_CFLAGS $HOST_LDFLAGS) works])
+    echo "abc------"
+ #   AC_TRY_COMPILE([], [return(0);],
+#	[ac_cv_prog_hostcc_works=1 AC_MSG_RESULT([yes])],
+#	AC_MSG_ERROR([installation or configuration problem: host compiler $HOST_CC cannot create executables.]) )
+
+
+    echo "---libtiff--- abc"
+
+    CC="$HOST_CXX"
+    CFLAGS="$HOST_CXXFLAGS"
+
+    AC_MSG_CHECKING([whether the host c++ compiler ($HOST_CXX $HOST_CXXFLAGS $HOST_LDFLAGS) works])
+#    AC_TRY_COMPILE([], [return(0);],
+#	[ac_cv_prog_hostcxx_works=1 AC_MSG_RESULT([yes])],
+#	AC_MSG_ERROR([installation or configuration problem: host compiler $HOST_CXX cannot create executables.]) )
+
+    echo "33333333333--------"
+
+    CC=$_SAVE_CC
+    CFLAGS=$_SAVE_CFLAGS
+    LDFLAGS=$_SAVE_LDFLAGS
+
+    echo "---check gcc-----"
+    AC_CHECK_PROGS(CC, $CC "${target_alias}-gcc" "${target}-gcc", :)
+    echo "-- unset ---cc"
+    unset ac_cv_prog_CC
+    echo "--- ac_prog_cc ---"
+    AC_PROG_CC
+    echo "---- after ac_prog_cc -----"
+    AC_CHECK_PROGS(CXX, $CXX "${target_alias}-g++" "${target}-g++", :)
+    unset ac_cv_prog_CXX
+    AC_PROG_CXX
+
+    AC_CHECK_PROGS(RANLIB, $RANLIB "${target_alias}-ranlib" "${target}-ranlib", :)
+    AC_CHECK_PROGS(AR, $AR "${target_alias}-ar" "${target}-ar", :)
+  #  MOZ_PATH_PROGS(AS, $AS "${target_alias}-as" "${target}-as", :)
+    AC_CHECK_PROGS(LD, $LD "${target_alias}-ld" "${target}-ld", :)
+    AC_CHECK_PROGS(STRIP, $STRIP "${target_alias}-strip" "${target}-strip", :)
+    AC_CHECK_PROGS(WINDRES, $WINDRES "${target_alias}-windres" "${target}-windres", :)
+    AC_DEFINE(CROSS_COMPILE)
+
+    dnl If we cross compile for ppc on Mac OS X x86, cross_compiling will
+    dnl have erroneously been set to "no", because the x86 build host is
+    dnl able to run ppc code in a translated environment, making a cross
+    dnl compiler appear native.  So we override that here.
+    cross_compiling=yes
+#else
+#    AC_PROG_CC
+#    AC_PROG_CXX
+#    AC_PROG_RANLIB
+# #   MOZ_PATH_PROGS(AS, $AS as, $CC)
+#    AC_CHECK_PROGS(AR, ar, :)
+#    AC_CHECK_PROGS(LD, ld, :)
+#    AC_CHECK_PROGS(STRIP, strip, :)
+#    AC_CHECK_PROGS(WINDRES, windres, :)
+#    if test -z "$HOST_CC"; then
+#        HOST_CC='$(CC)'
+#    fi
+#    if test -z "$HOST_CFLAGS"; then
+#        HOST_CFLAGS='$(CFLAGS)'
+#    fi
+#    if test -z "$HOST_CXX"; then
+#        HOST_CXX='$(CXX)'
+#    fi
+#    if test -z "$HOST_CXXFLAGS"; then
+#        HOST_CXXFLAGS='$(CXXFLAGS)'
+#    fi
+#    if test -z "$HOST_LDFLAGS"; then
+#        HOST_LDFLAGS='$(LDFLAGS)'
+#    fi
+#    if test -z "$HOST_RANLIB"; then
+#        HOST_RANLIB='$(RANLIB)'
+#    fi
+#    if test -z "$HOST_AR"; then
+#        HOST_AR='$(AR)'
+#    fi
+#    if test -z "$HOST_AR_FLAGS"; then
+#        HOST_AR_FLAGS='$(AR_FLAGS)'
+#    fi
+#fi
+
+fi
+
+OS_TEST="${target_cpu}"
+
+
+if test -n "$CROSS_COMPILE"; then
+    OS_TARGET="${target_os}"
+    OS_ARCH=`echo $target_os | sed -e 's|/|_|g'`
+    OS_RELEASE=
+    case "${target_os}" in
+        linux*)       OS_ARCH=Linux OS_TARGET=Linux ;;
+        kfreebsd*-gnu) OS_ARCH=GNU_kFreeBSD OS_TARGET=GNU_kFreeBSD ;;
+        gnu*)         OS_ARCH=GNU ;;
+        solaris*)     OS_ARCH=SunOS OS_RELEASE=5 ;;
+        mingw*)       OS_ARCH=WINNT OS_TARGET=WINNT ;;
+        darwin*)      OS_ARCH=Darwin OS_TARGET=Darwin ;;
+    esac
+    case "${target}" in
+        *-android*|*-linuxandroid*) OS_ARCH=Linux OS_TARGET=Android ;;
+    esac
+else
+    OS_TARGET=`uname -s`
+    OS_ARCH=`uname -s | sed -e 's|/|_|g'`
+    OS_RELEASE=`uname -r`
+fi
+
+# Only set CPU_ARCH if we recognize the value of OS_TEST
+
+case "$OS_TEST" in
+*86 | i86pc)
+    CPU_ARCH=x86
+    ;;
+
+powerpc64 | ppc64)
+    CPU_ARCH=ppc64
+    ;;
+
+powerpc | ppc | rs6000)
+    CPU_ARCH=ppc
+    ;;
+
+Alpha | alpha | ALPHA)
+    CPU_ARCH=Alpha
+    ;;
+
+s390)
+    CPU_ARCH=s390
+    ;;
+
+s390x)
+    CPU_ARCH=s390x
+    ;;
+
+hppa* | parisc)
+    CPU_ARCH=hppa
+    ;;
+
+sun4u | sparc*)
+    CPU_ARCH=sparc
+    ;;
+
+x86_64 | ia64)
+    CPU_ARCH="$OS_TEST"
+    ;;
+
+arm*)
+    CPU_ARCH=arm
+    ;;
+
+mips|mipsel)
+    CPU_ARCH="mips"
+    ;;
+esac
+
+echo "----- $OS_ARCH, $OS_TARGET, $CPU_ARCH  ------"
+
+if test -z "$OS_TARGET"; then
+    OS_TARGET=$OS_ARCH
+fi
+OS_CONFIG="${OS_TARGET}${OS_RELEASE}"
+
+dnl ========================================================
+dnl Android libstdc++, placed here so it can use MOZ_ARCH
+dnl computed above.
+dnl ========================================================
+
+if test "$OS_TARGET" = "Android"; then
+    case "$CPU_ARCH" in
+    armv7*)
+      ANDROID_CPU_ARCH=armeabi-v7a
+      ;;
+    arm*)
+      ANDROID_CPU_ARCH=armeabi
+      ;;
+    x86*)
+      ANDROID_CPU_ARCH=x86
+      ;;
+    esac
+fi
+
+echo "---- $ANDROID_CPU_ARCH 00000000"
+
+if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
+    if test -z "$STLPORT_CPPFLAGS$STLPORT_LDFLAGS$STLPORT_LIBS"; then
+        if test -n "$MOZ_ANDROID_LIBSTDCXX" ; then
+            if test ! -e "$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/libstdc++.a" ; then
+                AC_MSG_ERROR([Cannot find path to libstdc++ (NDK version >= 5?)])
+            fi
+            STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/gnu-libstdc++/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/include -D_GLIBCXX_PERMIT_BACKWARD_HASH"
+            STLPORT_LDFLAGS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH"
+            STLPORT_LIBS="-lstdc++"
+        elif test -e "$android_ndk/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/libstlport_static.a" ; then
+            STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/stlport/stlport"
+            STLPORT_LDFLAGS="-L$android_ndk/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/"
+            STLPORT_LIBS="-lstlport_static"
+        elif  test -e "$android_ndk/tmp/ndk-digit/build/install/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/libstlport_static.a" ; then
+            STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/stlport/stlport"
+            STLPORT_LDFLAGS="-L$android_ndk/tmp/ndk-digit/build/install/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH"
+            STLPORT_LIBS="-lstlport_static"
+        elif test "$target" != "arm-android-eabi"; then
+            dnl fail if we're not building with NDKr4
+            AC_MSG_ERROR([Couldn't find path to stlport in the android ndk])
+        fi
+    fi
+    CXXFLAGS="$CXXFLAGS $STLPORT_CPPFLAGS"
+    LDFLAGS="$LDFLAGS $STLPORT_LDFLAGS"
+    LIBS="$LIBS $STLPORT_LIBS"
+
+    # save these for libffi's subconfigure,
+    # which doesn't know how to figure this stuff out on its own
+    ANDROID_CFLAGS="$CFLAGS"
+    ANDROID_CPPFLAGS="$CPPFLAGS"
+    ANDROID_LDFLAGS="$LDFLAGS"
+fi
+
+AC_SUBST(ANDROID_NDK)
+AC_SUBST(ANDROID_TOOLCHAIN)
+AC_SUBST(ANDROID_PLATFORM)
+AC_SUBST(ANDROID_SDK)
+AC_SUBST(ANDROID_PLATFORM_TOOLS)
+
+MAINT='#'
+MAINTAINER_MODE_FALSE=''
+MAINTAINER_MODE_TRUE='#'
+
+AC_SUBST(MAINT)
+AC_SUBST(MAINTAINER_MODE_FALSE)
+AC_SUBST(MAINTAINER_MODE_TRUE)
+
+
+dnl ============================
+
+echo "======================================"
+echo "cross compiling from $host to $target, ${target_alias}, ${host_os}"
+echo "======================================"
+
+echo $CC
+
+echo "~~~~~~~~~"
+
 dnl Checks for programs.
-AC_PROG_CC
-AM_PROG_CC_C_O
+#cjh AC_PROG_CC
+#cjh AM_PROG_CC_C_O
+
+echo "======================================"
+echo "after sdlfjaldfjOG_CC"
+echo "======================================"
+
 
 dnl We want warnings. As many warnings as possible.
 VL_PROG_CC_WARNINGS()
@@ -514,6 +1004,9 @@ if test "$HAVE_MDI" = "yes" ; then
   AC_DEFINE(MDI_SUPPORT,1,[Support Microsoft Document Imaging format])
 fi
 
+
+
+
 dnl ---------------------------------------------------------------------------
 dnl Check for ZLIB.
 dnl ---------------------------------------------------------------------------
@@ -815,15 +1308,14 @@ HAVE_OPENGL=no
 
 AC_PATH_XTRA
 
-AX_CHECK_GL
-AX_CHECK_GLU
-AX_CHECK_GLUT
+#cjh AX_CHECK_GL
+#cjh AX_CHECK_GLU
+#cjh AX_CHECK_GLUT
 
-if test "$no_x" != "yes" -a "$no_gl" != "yes" \
-	-a "$no_glu" != "yes" -a "$no_glut" != "yes" ; then
-  HAVE_OPENGL=yes
-fi
-
+#cjh if test "$no_x" != "yes" -a "$no_gl" != "yes" \
+#cjh	-a "$no_glu" != "yes" -a "$no_glut" != "yes" ; then
+#cjh  HAVE_OPENGL=yes
+#fi
 AM_CONDITIONAL(HAVE_OPENGL, test "$HAVE_OPENGL" = "yes")
 
 dnl ---------------------------------------------------------------------------
